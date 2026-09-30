@@ -51,8 +51,9 @@ def analizar(lineas):
         return "NO_ENCONTRADO", []
 
     bloque = [lineas[idx]]
-    for l in lineas[idx + 1: idx + 7]:
-        if " vs " in norm(l):  # empieza otro partido
+    for l in lineas[idx + 1: idx + 8]:
+        n = norm(l)
+        if " vs " in n and RIVAL not in n:  # empieza OTRO partido
             break
         bloque.append(l)
     txt = norm(" ".join(bloque))
