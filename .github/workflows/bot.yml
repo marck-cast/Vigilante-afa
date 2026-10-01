@@ -1,0 +1,25 @@
+name: Bot vuelos
+on:
+  repository_dispatch:
+    types: [vuelo]
+
+jobs:
+  buscar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar navegador
+        run: |
+          pip install playwright
+          for i in 1 2 3; do timeout 180 playwright install --with-deps chromium && break; sleep 10; done
+      - name: Responder
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          ALLOWED_CHAT_ID: ${{ secrets.ALLOWED_CHAT_ID }}
+          CHAT_ID: ${{ github.event.client_payload.chat_id }}
+          TEXTO: ${{ github.event.client_payload.texto }}
+        run: python bot_vuelos.py
