@@ -119,32 +119,155 @@ def precio_de_linea(linea):
     return min(vals) if vals else None
 
 
-def extraer(lineas, maximo=6):
+RE_HORA = re.compile(r"^(\d{1,2}:\d{2})(?:\s?[AaPp]\.?\s?[Mm]\.?)?(\+\d)?$")
+RE_DUR = re.compile(r"^(?:\d+\s?h(?:\s?\d+\s?min)?|\d+\s?min)$")
+RE_RUTA = re.compile(r"^[A-Z]{3}\s?[–-]\s?[A-Z]{3}$")
+RE_CODIGOS = re.compile(r"^[A-Z]{3}(?:,\s?[A-Z]{3})*$")
+RE_ESCALA_DET = re.compile(r"^((?:\d+\s?h(?:\s?\d+\s?min)?|\d+\s?min))\s+([A-Z]{3}(?:,\s?[A-Z]{3})*)$")
+
+
+def extraer(lineas):
     """Cada linea con precio cierra un 'bloque': las lineas anteriores son sus detalles."""
     items, previo = [], -1
     for i, l in enumerate(lineas):
         p = precio_de_linea(l)
         if p is None:
             continue
-        bloque = [x for x in lineas[previo + 1:i] if len(x) <= 90][-8:]
+        bloque = [x for x in lineas[previo + 1:i] if len(x) <= 120][-25:]
         previo = i
         items.append((p, bloque))
-    vistos, unicos = set(), []
+    return items
+
+
+def minutos(dur):
+    h = re.search(r"(\d+)\s?h", dur)
+    m = re.search(r"(\d+)\s?min", dur)
+    return (int(h.group(1)) * 60 if h else 0) + (int(m.group(1)) if m else 0)
+
+
+def detalles(bloque):
+    d = {"horas": [], "aerolinea": "", "operado": "", "duracion": "", "ruta": "",
+         "escalas": "", "paradas": "", "co2": "", "emis": ""}
+    ultima_hora = -1
+    for i, l in enumerate(bloque):
+        n = norm(l)
+        if RE_HORA.match(l):
+            d["horas"].append(l)
+            ultima_hora = i
+        elif RE_RUTA.match(l):
+            d["ruta"] = l.replace(" ", "")
+        elif RE_DUR.match(l):
+            if not d["duracion"]:
+                d["duracion"] = l
+        elif "escala" in n and len(l) <= 20:
+            if not d["escalas"]:
+                d["escalas"] = l
+                if i + 1 < len(bloque):
+                    sig = bloque[i + 1]
+                    mo = RE_ESCALA_DET.match(sig)
+                    if mo:
+                        d["paradas"] = f"{mo.group(1)} en {mo.group(2)}"
+                    elif RE_CODIGOS.match(sig):
+                        d["paradas"] = sig
+        elif "kg co2" in n:
+            d["co2"] = l
+        elif "emisiones" in n:
+            d["emis"] = l
+    # aerolinea: la linea que sigue al ultimo horario
+    if ultima_hora >= 0 and ultima_hora + 1 < len(bloque):
+        cand = bloque[ultima_hora + 1]
+        if not (RE_RUTA.match(cand) or RE_DUR.match(cand) or RE_HORA.match(cand)
+                or "escala" in norm(cand) or "kg co2" in norm(cand)) and len(cand) <= 90:
+            partes = re.split(r"\s*(?=Operado por)", cand, maxsplit=1)
+            d["aerolinea"] = partes[0].strip()
+            if len(partes) > 1:
+                d["operado"] = partes[1].strip()
+    return d
+
+
+def es_vuelo(d):
+    return bool(d["ruta"] or d["escalas"] or d["duracion"])
+
+
+def armar_vuelos(items):
+    vuelos, vistos = [], set()
     for p, b in sorted(items, key=lambda t: t[0]):
-        clave = (p, " ".join(b))
-        if clave not in vistos:
+        d = detalles(b)
+        if not es_vuelo(d):
+            continue
+        d["precio"] = p
+        clave = (p, d["aerolinea"], tuple(d["horas"]), d["ruta"], d["duracion"], d["escalas"])
+        if clave in vistos:
+            continue
+        vistos.add(clave)
+        vuelos.append(d)
+    return vuelos
+
+
+def formato_hora(h):
+    m = RE_HORA.match(h)
+    if not m:
+        return h
+    base, mas = m.group(1), m.group(2)
+    if mas:
+        n = int(mas[1:])
+        return f"{base} (+{n} {'dia' if n == 1 else 'dias'})"
+    return base
+
+
+def linea_vuelo(n, d):
+    precio = f"{d['precio']:,}".replace(",", ".")
+    titulo = f"{n}) USD {precio}"
+    if d["aerolinea"]:
+        titulo += f" · {d['aerolinea']}"
+    out = [titulo]
+    horario = ""
+    if len(d["horas"]) >= 2:
+        horario = f"🕒 {formato_hora(d['horas'][0])} → {formato_hora(d['horas'][-1])}"
+    elif len(d["horas"]) == 1:
+        horario = f"🕒 {formato_hora(d['horas'][0])}"
+    if d["duracion"]:
+        horario += (" · " if horario else "") + f"⏱ {d['duracion']}"
+    if horario:
+        out.append("   " + horario)
+    ruta = d["ruta"]
+    if d["escalas"]:
+        esc = d["escalas"] + (f": {d['paradas']}" if d["paradas"] else "")
+        ruta = (ruta + " · " if ruta else "") + esc
+    if ruta:
+        out.append("   🛫 " + ruta)
+    if d["co2"]:
+        out.append("   🌱 " + d["co2"] + (f" ({d['emis']})" if d["emis"] else ""))
+    if d["operado"]:
+        out.append("   ℹ️ " + d["operado"])
+    return "\n".join(out)
+
+
+def armar_mensaje(origen, destino, ida, vuelta, url, vuelos, items):
+    nombre = destino if len(destino) == 3 else destino.title()
+    out = [f"✈️ {origen} → {nombre}", f"📅 Ida {ida} · Vuelta {vuelta}", ""]
+    if vuelos:
+        for n, d in enumerate(vuelos[:6], 1):
+            out.append(linea_vuelo(n, d))
+            out.append("")
+        con_dur = [d for d in vuelos if d["duracion"]]
+        if len(con_dur) > 1:
+            r = min(con_dur, key=lambda d: minutos(d["duracion"]))
+            precio = f"{r['precio']:,}".replace(",", ".")
+            out.append(f"⚡ Mas rapido: {r['duracion']} · USD {precio}" + (f" · {r['aerolinea']}" if r["aerolinea"] else ""))
+            out.append("")
+    else:
+        # no pude ordenar los campos: muestro las lineas tal cual
+        vistos = set()
+        for n, (p, b) in enumerate(sorted(items, key=lambda t: t[0])[:6], 1):
+            clave = (p, " ".join(b))
+            if clave in vistos:
+                continue
             vistos.add(clave)
-            unicos.append((p, b))
-    return unicos[:maximo]
-
-
-def armar_mensaje(origen, destino, ida, vuelta, url, items):
-    out = [f"✈️ {origen} → {destino}", f"📅 Ida {ida} · Vuelta {vuelta}", ""]
-    for n, (p, b) in enumerate(items, 1):
-        out.append(f"{n}) USD {p:,}".replace(",", "."))
-        if b:
-            out.append("   " + " · ".join(b))
-    out += ["", "🔗 " + url, "(Detalles tal como los muestra Google; si algo se ve raro, mandame /crudo con la misma busqueda.)"]
+            out.append(f"{n}) USD {p:,}".replace(",", "."))
+            if b:
+                out.append("   " + " · ".join(b[-8:]))
+    out += ["🔗 " + url]
     return "\n".join(out)
 
 
@@ -200,7 +323,8 @@ def main():
             "o que Google haya bloqueado la consulta.\n" + url
         )
         return
-    responder(armar_mensaje(origen, destino, ida, vuelta, url, items))
+    vuelos = armar_vuelos(items)
+    responder(armar_mensaje(origen, destino, ida, vuelta, url, vuelos, items))
 
 
 if __name__ == "__main__":
