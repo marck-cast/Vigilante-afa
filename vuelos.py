@@ -1,4 +1,4 @@
-"""Vigilante de vuelos: Buenos Aires -> Japon, abril 2027. Avisa si baja del precio objetivo."""
+"""Vigilante de vuelos: Buenos Aires -> Tokio. Avisa si hay pasajes <= PRECIO_MAX."""
 import os
 import re
 import urllib.request
@@ -7,12 +7,17 @@ from playwright.sync_api import sync_playwright
 
 TOPIC = os.environ["NTFY_TOPIC"]
 ORIGEN = "EZE"
-DESTINO = "TYO"          # Tokio (Narita + Haneda). Otras opciones: OSA (Osaka)
+DESTINO = "TYO"          # Tokio (Narita + Haneda)
 PRECIO_MAX = 1600        # en USD
 FECHAS = [               # (ida, vuelta) AAAA-MM-DD
+    # Abril 2027
     ("2027-04-03", "2027-04-17"),
     ("2027-04-10", "2027-04-24"),
     ("2027-04-14", "2027-04-28"),
+    # Octubre - Noviembre 2027
+    ("2027-10-08", "2027-10-22"),
+    ("2027-10-22", "2027-11-05"),
+    ("2027-11-08", "2027-11-22"),
 ]
 
 ESP = r"[ \t\u00a0]*"
@@ -78,18 +83,24 @@ def main():
         browser.close()
 
     if not resultados:
-        print("No pude leer ningun precio (bloqueo, captcha o cambio de diseno).")
+        print("No pude leer ningun precio (bloqueo, captcha, fechas todavia no a la venta o cambio de diseno).")
         return
 
     resultados.sort()
-    mejor, ida, vuelta, url = resultados[0]
-    print(f"Mejor precio: USD {mejor} ({ida} -> {vuelta})")
-    if mejor <= PRECIO_MAX:
+    print("Resumen (precio minimo por fechas):")
+    for precio, ida, vuelta, _ in resultados:
+        print(f"   USD {precio}  {ida} -> {vuelta}")
+
+    baratos = [r for r in resultados if r[0] <= PRECIO_MAX]
+    if baratos:
+        detalle = "\n".join(f"USD {pr}: ida {i}, vuelta {v}" for pr, i, v, _ in baratos)
         avisar(
-            f"Vuelo a Japon USD {mejor}",
-            f"Buenos Aires - Tokio ida {ida}, vuelta {vuelta}: USD {mejor} (objetivo {PRECIO_MAX}).",
-            url,
+            f"Vuelo a Japon desde USD {baratos[0][0]}",
+            f"Buenos Aires - Tokio, pasajes de USD {PRECIO_MAX} o menos:\n{detalle}",
+            baratos[0][3],
         )
+    else:
+        print(f"Ninguno llega a USD {PRECIO_MAX} todavia.")
 
 
 if __name__ == "__main__":
